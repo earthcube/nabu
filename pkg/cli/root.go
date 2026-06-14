@@ -1,0 +1,184 @@
+package cli
+
+import (
+	"errors"
+	"fmt"
+	"mime"
+	"os"
+	"path"
+	"path/filepath"
+
+	"github.com/gleanerio/gleaner2/internal/common"
+	"github.com/gleanerio/gleaner2/pkg/storage"
+	"github.com/gleanerio/gleaner2/pkg/config"
+	"github.com/minio/minio-go/v7"
+	log "github.com/sirupsen/logrus"
+	"github.com/spf13/cobra"
+
+	"github.com/spf13/viper"
+)
+
+var cfgFile, cfgURL, cfgName, cfgPath, nabuConfName string
+var minioVal, portVal, accessVal, secretVal, bucketVal string
+var sslVal, dangerousVal bool
+var viperVal *viper.Viper
+var mc *minio.Client
+var prefixVal, endpointVal string
+
+// rootCmd represents the base command when called without any subcommands
+var rootCmd = &cobra.Command{
+	Use:   "gleaner",
+	Short: "GleanerIO unified tool for harvesting and loading linked data",
+	Long: `gleaner is the unified command-line tool that combines the former
+Gleaner (data harvesting) and Nabu (graph loading) projects into one application.
+
+Commands:
+  summon    - Harvest JSON-LD from configured data sources
+  mill      - Process harvested data through the milling pipeline
+  bulk      - Bulk load RDF data to SPARQL endpoints
+  release   - Create release graphs
+  prune     - Remove orphaned graphs
+  graph     - Graph management (clear, drop)
+  config    - Configuration management (init)
+`,
+	// Uncomment the following line if your bare application
+	// has an action associated with it:
+	// Run: func(cmd *cobra.Command, args []string) { },
+}
+
+// Execute adds all child commands to the root command and sets flags appropriately.
+// This is called by main.main(). It only needs to happen once to the rootCmd.
+func Execute() {
+	cobra.CheckErr(rootCmd.Execute())
+}
+
+// requireConfig checks that configuration and MinIO connection are loaded.
+// Commands that need config should call this at the start of their Run function.
+func requireConfig() {
+	if viperVal == nil {
+		log.Fatal("Configuration not loaded. Provide --cfg, --cfgPath/--cfgName, or --cfgURL.")
+	}
+	if mc == nil {
+		log.Fatal("MinIO connection not established. Check your config and MinIO settings.")
+	}
+}
+
+func init() {
+	//LOG_FILE := "nabu.log" // log to custom file
+	//logFile, err := os.OpenFile(LOG_FILE, os.O_APPEND|os.O_RDWR|os.O_CREATE, 0644)
+	//if err != nil {
+	//log.Panic(err)
+	//return
+	//}
+	////defer logFile.Close()
+
+	//log.SetOutput(logFile) // Set log out put and enjoy :)
+
+	//log.SetFlags(log.Lshortfile | log.LstdFlags) // optional: log date-time, filename, and line number
+	//log.Println("Logging to custom file")
+	//log.Println("EarthCube Nabu")
+	common.InitLogging()
+
+	mime.AddExtensionType(".jsonld", "application/ld+json")
+
+	akey := os.Getenv("MINIO_ACCESS_KEY")
+	skey := os.Getenv("MINIO_SECRET_KEY")
+	cobra.OnInitialize(initConfig)
+
+	// Here you will define your flags and configuration settings.
+	// Cobra supports persistent flags, which, if defined here,
+	// will be global for your application.
+	rootCmd.PersistentFlags().StringVar(&prefixVal, "prefix", "", "prefix to run. use source in future.")
+	// This needs to be done right... there are prov/source milled/source
+	// will need a custom validator to say, hey use prefix.
+	//	rootCmd.PersistentFlags().StringVar(&prefixVal, "source", "", "prefix to run. Consistency with glcon commend")
+
+	// Enpoint Server setting var
+	rootCmd.PersistentFlags().StringVar(&endpointVal, "endpoint", "", "end point server set for the SPARQL endpoints")
+
+	rootCmd.PersistentFlags().StringVar(&cfgURL, "cfgURL", "", "URL location for config file")
+	rootCmd.PersistentFlags().StringVar(&cfgPath, "cfgPath", "configs", "base location for config files (default is configs/)")
+	rootCmd.PersistentFlags().StringVar(&cfgName, "cfgName", "local", "config file (default is local so configs/local)")
+	rootCmd.PersistentFlags().StringVar(&nabuConfName, "nabuConfName", "nabu", "config file (default is local so configs/local)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "cfg", "", "compatibility/overload: full path to config file (default location gleaner in configs/local)")
+
+	// minio env variables
+	rootCmd.PersistentFlags().StringVar(&minioVal, "address", "localhost", "FQDN for server")
+	rootCmd.PersistentFlags().StringVar(&portVal, "port", "9000", "Port for minio server, default 9000")
+	rootCmd.PersistentFlags().StringVar(&accessVal, "access", akey, "Access Key ID")
+	rootCmd.PersistentFlags().StringVar(&secretVal, "secret", skey, "Secret access key")
+	rootCmd.PersistentFlags().StringVar(&bucketVal, "bucket", "gleaner", "The configuration bucket")
+
+	rootCmd.PersistentFlags().BoolVar(&sslVal, "ssl", false, "Use SSL boolean")
+	rootCmd.PersistentFlags().BoolVar(&dangerousVal, "dangerous", false, "Use dangerous mode boolean")
+	// Cobra also supports local flags, which will only run
+	// when this action is called directly.
+	//rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+}
+
+// initConfig reads in config file and ENV variables if set.
+// This runs before every command via cobra.OnInitialize. Commands that don't
+// need config (like --help, config init) will get nil viperVal/mc and should
+// handle that gracefully.
+func initConfig() {
+	var err error
+
+	// Load configuration from the appropriate source
+	if cfgFile != "" {
+		viperVal, err = config.ReadNabuConfig(filepath.Base(cfgFile), filepath.Dir(cfgFile))
+		if err != nil {
+			log.Warnf("cannot read config: %s", err)
+			return
+		}
+	} else if cfgURL != "" {
+		viperVal, err = config.ReadNabuConfigURL(cfgURL)
+		if err != nil {
+			log.Warnf("cannot read config URL: %s", err)
+			return
+		}
+	} else {
+		viperVal, err = config.ReadNabuConfig(nabuConfName, path.Join(cfgPath, cfgName))
+		if err != nil {
+			// Config not found is normal for --help, config init, etc.
+			log.Debugf("cannot read config: %s", err)
+			return
+		}
+	}
+
+	if viperVal == nil {
+		return
+	}
+
+	mc, err = storage.MinioConnection(viperVal)
+	if err != nil {
+		log.Warnf("cannot connect to minio: %s", err)
+		return
+	}
+
+	err = common.ConnCheck(mc)
+	if err != nil {
+		err = errors.New(err.Error() + fmt.Sprintf(" check config/minio: address, port, ssl. connection info: endpoint: %v ", mc.EndpointURL()))
+		log.Warnf("cannot connect to minio: %s", err)
+		return
+	}
+
+	bucketVal, err = config.GetBucketName(viperVal)
+	if err != nil {
+		log.Warnf("cannot read bucket name: %s", err)
+		return
+	}
+
+	if dangerousVal {
+		viperVal.Set("flags.dangerous", true)
+	}
+
+	if endpointVal != "" {
+		viperVal.Set("flags.endpoint", endpointVal)
+	}
+
+	if prefixVal != "" {
+		var p []string
+		p = append(p, prefixVal)
+		viperVal.Set("objects.prefix", p)
+	}
+}

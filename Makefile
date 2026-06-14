@@ -1,17 +1,45 @@
 DOCKERVER :=`cat VERSION`
-.DEFAULT_GOAL := nabu
+.DEFAULT_GOAL := build
 VERSION :=`cat VERSION`
 
-   
-nabu:
-	cd cmd/nabu; \
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 env go build -o nabu
+# Linux release binary (static, amd64)
+gleaner-release:
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o gleaner ./cmd/gleaner/
 
-releases: nabu
+build:
+	go build -o gleaner ./cmd/gleaner/
+
+test:
+	go test ./pkg/config/ ./pkg/graph/
+
+test-all:
+	go test ./...
+
+vet:
+	go vet ./...
+
+check: build vet test smoke
+	@echo "All checks passed."
+
+smoke: build
+	./tools/smoke_test.sh ./gleaner
+
+validate-config:
+	@if [ -z "$(CFG_DIR)" ]; then echo "Usage: make validate-config CFG_DIR=configs/local"; exit 1; fi
+	./tools/validate_config.sh $(CFG_DIR)
 
 docker:
-	podman build  --tag="fils/nabu:$(VERSION)"  --file=./build/Dockerfile .
+	podman build  --tag="fils/gleaner2:$(VERSION)"  --file=./build/Dockerfile .
 
 dockerpush:
-	podman push localhost/fils/nabu:$(VERSION) fils/nabu:$(VERSION)
-	podman push localhost/fils/nabu:$(VERSION) fils/nabu:latest
+	podman push localhost/fils/gleaner2:$(VERSION) fils/gleaner2:$(VERSION)
+	podman push localhost/fils/gleaner2:$(VERSION) fils/gleaner2:latest
+
+publish:
+	docker tag fils/gleaner2:$(VERSION) fils/gleaner2:latest
+	docker push fils/gleaner2:$(VERSION) ; \
+	docker push fils/gleaner2:latest
+
+releases: gleaner-release docker dockerpush publish
+
+.PHONY: gleaner-release build test test-all vet check smoke validate-config docker dockerpush publish releases

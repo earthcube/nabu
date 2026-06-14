@@ -1,0 +1,23 @@
+package cli
+
+import (
+	"github.com/gleanerio/gleaner2/internal/millers"
+
+	"github.com/spf13/cobra"
+)
+
+var millCmd = &cobra.Command{
+	Use:   "mill",
+	Short: "Run the miller to process harvested JSON-LD data",
+	Long: `Mill processes the harvested JSON-LD data through the configured
+milling pipeline. This converts JSON-LD to RDF (N-Quads) using the shared
+graph conversion code, and optionally runs SHACL validation.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		requireConfig()
+		millers.Millers(mc, viperVal)
+	},
+}
+
+func init() {
+	rootCmd.AddCommand(millCmd)
+}

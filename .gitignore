@@ -1,4 +1,8 @@
 **/secret/
 secret/**
 logs/**
-/cmd/nabu/nabu
+/gleaner
+/nabu
+**/*.log
+**/.idea/**
+**/.fleet/**
