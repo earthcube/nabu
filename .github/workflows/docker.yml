@@ -65,7 +65,7 @@ jobs:
         run: |
           go build -o gleaner -ldflags "-s -w -X main.VERSION=${{ env.VERSION }} -X github.com/gleanerio/gleaner2/pkg.VERSION=${{ env.VERSION }}" ./cmd/gleaner
         env:
-          GOOS: ${{matrix.goss}}
+          GOOS: ${{matrix.goos}}
           GOARCH: ${{matrix.goarch}}
           CGO_ENABLED: 0
       #  deploy:
